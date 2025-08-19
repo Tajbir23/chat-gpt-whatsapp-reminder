@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>WhatsApp Reminder</title>
+	<style>
+		body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;color:#0f172a;background:#f8fafc}
+		.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 1px 2px rgba(0,0,0,0.04);padding:20px;margin-bottom:16px}
+		.h{font-size:22px;font-weight:700;margin:0 0 12px}
+		.row{display:flex;gap:12px;flex-wrap:wrap}
+		.col{flex:1 1 240px}
+		label{display:block;font-size:13px;color:#334155;margin-bottom:6px}
+		input,textarea,button{width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#0f172a;font-size:14px}
+		textarea{min-height:120px;resize:vertical}
+		button{cursor:pointer;background:#0ea5e9;color:#fff;border-color:#0284c7}
+		button:disabled{opacity:.6;cursor:not-allowed}
+		.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px;border:1px solid #cbd5e1;background:#f1f5f9;color:#0f172a}
+		.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+		.progress{height:10px;background:#e2e8f0;border-radius:999px;overflow:hidden}
+		.progress>span{display:block;height:100%;background:#22c55e;width:0%}
+		.qr{display:block;width:260px;height:260px;border:1px dashed #94a3b8;border-radius:12px;object-fit:contain;background:#f8fafc}
+		ul{margin:8px 0 0;padding-left:18px}
+	</style>
+</head>
+<body>
+	<div class="card">
+		<h1 class="h">WhatsApp Reminder</h1>
+		<div>
+			<span class="badge">Status: <span id="statusText" class="mono"><%= state && state.status %></span></span>
+		</div>
+	</div>
+
+	<% if (!(state && state.loggedIn)) { %>
+		<div class="card">
+			<h2 class="h">Login to WhatsApp</h2>
+			<p>Scan the QR code with WhatsApp to log in. If it does not appear, wait a few seconds.</p>
+			<img id="qrImg" class="qr" alt="QR Code" src="<%= (state && state.qrDataUrl) || '' %>" />
+		</div>
+	<% } else { %>
+		<div class="card">
+			<h2 class="h">Send Message</h2>
+			<div class="row">
+				<div class="col">
+					<label for="id">Sheet/Customer ID</label>
+					<input id="id" type="text" placeholder="enter id" />
+				</div>
+				<div class="col">
+					<label for="startDate">Start Date</label>
+					<input id="startDate" type="date" />
+				</div>
+				<div class="col">
+					<label for="endDate">End Date</label>
+					<input id="endDate" type="date" />
+				</div>
+			</div>
+			<div style="margin-top:12px">
+				<label for="message">Message</label>
+				<textarea id="message" placeholder="Write your message..."></textarea>
+			</div>
+			<div style="margin-top:12px">
+				<button id="sendBtn">Send</button>
+			</div>
+		</div>
+
+		<div class="card">
+			<h2 class="h">Progress</h2>
+			<div class="row">
+				<div class="col">
+					<div class="progress"><span id="bar"></span></div>
+					<div style="margin-top:8px" class="mono"><span id="count">0</span>/<span id="total">0</span> sent
+						<span style="margin-left:10px;color:#166534">ok: <span id="ok">0</span></span>
+						<span style="margin-left:10px;color:#9f1239">failed: <span id="failed">0</span></span>
+						<span style="margin-left:10px;color:#92400e">skipped: <span id="skipped">0</span></span>
+					</div>
+				</div>
+			</div>
+			<div style="margin-top:8px">
+				<strong>Last:</strong> <span class="mono" id="last">-</span>
+				<div class="mono" id="reason" style="color:#6b7280;font-size:12px"></div>
+				<ul id="log"></ul>
+			</div>
+		</div>
+	<% } %>
+
+	<script>
+	(function(){
+		const statusText = document.getElementById('statusText')
+		const qrImg = document.getElementById('qrImg')
+
+		// Poll state for QR/status updates while not logged in
+		if (qrImg) {
+			setInterval(async () => {
+				try {
+					const res = await fetch('/api/state')
+					const st = await res.json()
+					statusText.textContent = st.status
+					if (st.qrDataUrl) {
+						qrImg.src = st.qrDataUrl
+					}
+					if (st.loggedIn) {
+						location.reload()
+					}
+				} catch (e) {}
+			}, 2000)
+		}
+
+		const sendBtn = document.getElementById('sendBtn')
+		if (sendBtn) {
+			const elId = document.getElementById('id')
+			const elStart = document.getElementById('startDate')
+			const elEnd = document.getElementById('endDate')
+			const elMsg = document.getElementById('message')
+			const bar = document.getElementById('bar')
+			const count = document.getElementById('count')
+			const total = document.getElementById('total')
+			const last = document.getElementById('last')
+			const reason = document.getElementById('reason')
+			const log = document.getElementById('log')
+
+			// Subscribe to progress via SSE
+			let lastLoggedSent = 0
+			const ok = document.getElementById('ok')
+			const failed = document.getElementById('failed')
+			const skipped = document.getElementById('skipped')
+			const es = new EventSource('/progress')
+			es.onmessage = (ev) => {
+				try {
+					const p = JSON.parse(ev.data)
+					total.textContent = p.total || 0
+					count.textContent = p.sent || 0
+					ok.textContent = p.sent || 0
+					failed.textContent = p.failed || 0
+					skipped.textContent = p.skipped || 0
+					last.textContent = p.last || '-'
+					reason.textContent = p.lastError ? ('error: ' + p.lastError.message) : (p.lastSkipped ? ('skipped: ' + p.lastSkipped) : '')
+					const pct = (p.total ? Math.round((p.sent / p.total) * 100) : 0)
+					bar.style.width = pct + '%'
+					// Only log when sent count increases to avoid duplicates
+					if (typeof p.sent === 'number' && p.sent > lastLoggedSent && p.last) {
+						const li = document.createElement('li')
+						li.textContent = 'Sent to ' + p.last
+						log.prepend(li)
+						lastLoggedSent = p.sent
+					}
+				} catch (e) {}
+			}
+
+			sendBtn.addEventListener('click', async () => {
+				sendBtn.disabled = true
+				try {
+					const payload = {
+						id: elId.value.trim(),
+						startDate: elStart.value,
+						endDate: elEnd.value,
+						message: elMsg.value
+					}
+					const res = await fetch('/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+					if (!res.ok) {
+						const j = await res.json().catch(()=>({message:'Error'}))
+						alert(j.message || 'Failed to start sending')
+					}
+				} catch (e) {
+					console.error(e)
+				} finally {
+					sendBtn.disabled = false
+				}
+			})
+		}
+	})();
+	</script>
+</body>
+</html>
